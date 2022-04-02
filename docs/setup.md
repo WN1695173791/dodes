@@ -13,6 +13,7 @@ pip install flax==0.3.1
 pip install keras==2.6.0
 pip install tensorflow-probability==0.13.0
 pip install --upgrade tensorflow-estimator==2.6.0
+pip install einops
 ```
 
 ### setup env
