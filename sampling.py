@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import jax.random as random
 import abc
 import flax
+from ei import ei_x_step
 
 from models.utils import from_flattened_numpy, to_flattened_numpy, get_score_fn
 from scipy import integrate
@@ -105,6 +106,15 @@ def get_sampling_fn(config, sde, model, shape, inverse_scaler, eps):
                                   shape=shape,
                                   inverse_scaler=inverse_scaler,
                                   denoise=config.sampling.noise_removal,
+                                  eps=eps)
+  elif sampler_name.lower() == 'ei':
+    sampling_fn = get_ei_sampler(sde=sde,
+                                  model=model,
+                                  shape=shape,
+                                  inverse_scaler=inverse_scaler,
+                                  num_step = config.sampling.ei_step,
+                                  is_quad = config.sampling.ei_quad,
+                                  order = config.sampling.ei_order,
                                   eps=eps)
   # Predictor-Corrector sampling. Predictor-only and Corrector-only samplers are special cases.
   elif sampler_name.lower() == 'pc':
@@ -437,6 +447,46 @@ def get_pc_sampler(sde, model, shape, predictor, corrector, inverse_scaler, snr,
     return inverse_scaler(x_mean if denoise else x), sde.N * (n_steps + 1)
 
   return jax.pmap(pc_sampler, axis_name='batch')
+
+def get_ei_sampler(sde, model, shape, inverse_scaler, num_step, is_quad, order, eps=1e-3):
+  if is_quad:
+    rev_timesteps = (jnp.linspace(jnp.sqrt(sde.T), jnp.sqrt(eps), num_step+1))**2
+  else:
+    rev_timesteps = jnp.linspace(sde.T, eps, num_step+1)
+
+  ei_coef = sde.get_ei_coef(order, rev_timesteps)
+
+  _ones = jnp.ones((jax.local_device_count(), shape[0]))
+
+  @jax.pmap
+  def pred_eps(state, x, t):
+    score_fn = get_score_fn(sde, model, state.params_ema, state.model_state, train=False, continuous=True)
+    score = score_fn(x, t)
+    return sde.recover_eps(score, t)
+
+  def ei_sampler(prng, pstate, z=None):
+    # Initial sample
+    rng = flax.jax_utils.unreplicate(prng)
+    rng, step_rng = random.split(rng)
+    if z is None:
+      # If not represent, sample the latent code from the prior distibution of the SDE.
+      x = sde.prior_sampling(step_rng, (jax.local_device_count(),) + shape)
+    else:
+      x = z
+
+    def ei_body_fn(i, val):
+        x, eps_pred = val
+        t= rev_timesteps[i]
+        vec_t = _ones * t
+        
+        new_eps = pred_eps(pstate, x, vec_t)
+        return ei_x_step(x, ei_coef[i], new_eps, eps_pred)
+
+    eps_pred = jnp.stack([x,x,x])
+    x, _ = jax.lax.fori_loop(0, num_step, ei_body_fn, (x, eps_pred))
+    x = inverse_scaler(x)
+    return x, num_step
+  return ei_sampler
 
 
 def get_ode_sampler(sde, model, shape, inverse_scaler,

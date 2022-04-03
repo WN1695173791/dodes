@@ -3,6 +3,7 @@ import abc
 import jax.numpy as jnp
 import jax
 import numpy as np
+from ei import get_eps_fn
 from utils import batch_mul
 
 
@@ -110,6 +111,11 @@ class SDE(abc.ABC):
 
     return RSDE()
 
+  def get_ei_coef(self, order, rev_timesteps):
+    # return [x_coef, eps_coef]
+    x_coef = self.psi(rev_timesteps[:-1], rev_timesteps[1:])
+    eps_coef = get_eps_fn(order)(self, rev_timesteps)
+    return jnp.concatenate([x_coef[:, None], eps_coef], axis=1)
 
 class VPSDE(SDE):
   def __init__(self, beta_min=0.1, beta_max=20, N=1000):
@@ -165,6 +171,26 @@ class VPSDE(SDE):
     G = sqrt_beta
     return f, G
 
+  def log_alpha_fn(self, t):
+    log_mean_coef = -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+    return 2 * log_mean_coef
+
+  def alpha_fn(self, t):
+    return jnp.exp(self.log_alpha_fn(t))
+
+  def psi(self, t_start, t_end):
+    return jnp.sqrt(self.alpha_fn(t_end) / self.alpha_fn(t_start))
+
+  def eps_integrand(self, vec_t):
+    grad_log_alpha_fn = jax.grad(self.log_alpha_fn)
+    d_log_alpha_dtau = jax.vmap(grad_log_alpha_fn)(vec_t)
+    integrand = -0.5 * d_log_alpha_dtau / jnp.sqrt(1 - self.alpha_fn(vec_t))
+    return integrand
+
+  def recover_eps(self, score, t):
+    std = self.marginal_prob(jnp.zeros_like(score), t)[1]
+    eps = - batch_mul(score, std)
+    return eps
 
 class subVPSDE(SDE):
   def __init__(self, beta_min=0.1, beta_max=20, N=1000):

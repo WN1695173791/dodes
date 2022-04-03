@@ -26,6 +26,10 @@ def get_default_configs():
   sampling.probability_flow = False
   sampling.snr = 0.16
 
+  sampling.ei_step = 10
+  sampling.ei_quad = False
+  sampling.ei_order = 4
+
   # evaluation
   config.eval = evaluate = ml_collections.ConfigDict()
   evaluate.begin_ckpt = 9
