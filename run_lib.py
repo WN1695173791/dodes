@@ -21,6 +21,7 @@ import io
 import os
 import time
 from typing import Any
+import tqdm
 
 import flax
 import flax.jax_utils as flax_utils
@@ -580,3 +581,124 @@ def evaluate(config,
     os.path.join(eval_dir, f"meta_{jax.host_id()}_*"))
   for file in meta_files:
     tf.io.gfile.remove(file)
+
+
+def sample_data(config,
+                ckpt_file,
+                result_folder):
+  tf.io.gfile.makedirs(result_folder)
+
+  rng = jax.random.PRNGKey(config.seed + 1)
+
+  # Create data normalizer and its inverse
+  inverse_scaler = datasets.get_data_inverse_scaler(config)
+
+  # Initialize model
+  rng, model_rng = jax.random.split(rng)
+  score_model, init_model_state, initial_params = mutils.init_model(model_rng, config)
+  optimizer = losses.get_optimizer(config).create(initial_params)
+  state = mutils.State(step=0, optimizer=optimizer, lr=config.optim.lr,
+                       model_state=init_model_state,
+                       ema_rate=config.model.ema_rate,
+                       params_ema=initial_params,
+                       rng=rng)  # pytype: disable=wrong-keyword-args
+
+  # Setup SDEs
+  if config.training.sde.lower() == 'vpsde':
+    sde = sde_lib.VPSDE(beta_min=config.model.beta_min, beta_max=config.model.beta_max, N=config.model.num_scales)
+    sampling_eps = 1e-3
+  elif config.training.sde.lower() == 'subvpsde':
+    sde = sde_lib.subVPSDE(beta_min=config.model.beta_min, beta_max=config.model.beta_max, N=config.model.num_scales)
+    sampling_eps = 1e-3
+  elif config.training.sde.lower() == 'vesde':
+    sde = sde_lib.VESDE(sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
+    sampling_eps = 1e-5
+  else:
+    raise NotImplementedError(f"SDE {config.training.sde} unknown.")
+
+  sampling_shape = (config.eval.batch_size // jax.local_device_count(),
+                      config.data.image_size, config.data.image_size,
+                      config.data.num_channels)
+  sampling_fn = sampling.get_sampling_fn(config, sde, score_model, sampling_shape, inverse_scaler, sampling_eps)
+
+  num_sampling_rounds = config.eval.num_samples // config.eval.batch_size + 1
+  # Use inceptionV3 for images with resolution higher than 256.
+  inceptionv3 = config.data.image_size >= 256
+  inception_model = evaluation.get_inception_model(inceptionv3=inceptionv3)
+
+  state = checkpoints.restore_checkpoint(ckpt_file, state)
+
+  pstate = flax.jax_utils.replicate(state)
+
+  state = jax.device_put(state)
+  for r in tqdm.tqdm(range(0, num_sampling_rounds)):
+    rng, *sample_rng = jax.random.split(rng, jax.local_device_count() + 1)
+    sample_rng = jnp.asarray(sample_rng)
+    samples, nfe_cnt = sampling_fn(sample_rng, pstate)
+    samples = np.clip(samples * 255., 0, 255).astype(np.uint8)
+    samples = samples.reshape(
+      (-1, config.data.image_size, config.data.image_size, config.data.num_channels))
+        # Write samples to disk or Google Cloud Storage
+    with tf.io.gfile.GFile(
+        os.path.join(result_folder, f"samples_{r}.npz"), "wb") as fout:
+      io_buffer = io.BytesIO()
+      np.savez_compressed(io_buffer, samples=samples)
+      fout.write(io_buffer.getvalue())
+
+    # Force garbage collection before calling TensorFlow code for Inception network
+    gc.collect()
+    latents = evaluation.run_inception_distributed(samples, inception_model,
+                                                inceptionv3=inceptionv3)
+    # Force garbage collection again before returning to JAX code
+    gc.collect()
+    # Save latent represents of the Inception network to disk or Google Cloud Storage
+    with tf.io.gfile.GFile(
+        os.path.join(result_folder, f"statistics_{r}.npz"), "wb") as fout:
+      io_buffer = io.BytesIO()
+      np.savez_compressed(
+        io_buffer, pool_3=latents["pool_3"], logits=latents["logits"], nfe_cnt=nfe_cnt)
+      fout.write(io_buffer.getvalue())
+  
+  check_fid(config, result_folder)
+
+def check_fid(config, result_folder):
+  all_logits = []
+  all_pools = []
+  all_nfe_cnt = []
+
+  inceptionv3 = config.data.image_size >= 256
+
+  stats = tf.io.gfile.glob(os.path.join(result_folder, "statistics_*.npz"))
+
+  for stat_file in stats:
+    with tf.io.gfile.GFile(stat_file, "rb") as fin:
+      stat = np.load(fin)
+      if not inceptionv3:
+        all_logits.append(stat["logits"])
+      all_pools.append(stat["pool_3"])
+      all_nfe_cnt.append(stat["nfe_cnt"])
+
+  if not inceptionv3:
+    all_logits = np.concatenate(
+      all_logits, axis=0)[:config.eval.num_samples]
+  all_pools = np.concatenate(all_pools, axis=0)[:config.eval.num_samples]
+
+  # Load pre-computed dataset statistics.
+  data_stats = evaluation.load_dataset_stats(config)
+  data_pools = data_stats["pool_3"]
+
+  # Compute FID/KID/IS on all samples together.
+  if not inceptionv3:
+    inception_score = tfgan.eval.classifier_score_from_logits(all_logits)
+  else:
+    inception_score = -1
+
+  fid = tfgan.eval.frechet_classifier_distance_from_activations(data_pools, all_pools)
+
+  avg_nfe_cnt = np.mean(all_nfe_cnt)
+  logging.info("%.6e inception_score: %.6e, FID: %.6e" % (avg_nfe_cnt,inception_score, fid))
+
+  with tf.io.gfile.GFile(os.path.join(result_folder, f"report.npz"),"wb") as f:
+    io_buffer = io.BytesIO()
+    np.savez_compressed(io_buffer, IS=inception_score, fid=fid, nfe=avg_nfe_cnt)
+    f.write(io_buffer.getvalue())

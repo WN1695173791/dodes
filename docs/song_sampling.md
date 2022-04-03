@@ -1,3 +1,5 @@
+# play ipynb
+
 ## install jupyter
 
 ```shell
@@ -20,10 +22,17 @@ jupyter lab build
 ## download ckpts
 
 ```shell
-mkdir -p ckpts/
+mkdir -p ckpts/config.eval.batch_size
 
 # vp/cifar_ddpm_continuous
 gdown 1bLkJGwgX1kPlMdYv1TDtTRLecpUCokON -O ckpts/cifar10_ddpm
 ```
 
 ## check `sampling.ipynb`
+
+
+# run fid
+
+```shell
+python main.py --config configs/vp/ddpm/cifar10_continuous.py --mode sampling --ckpt ckpts/cifar10_ddpm --result_folder logs/deleteme --config.eval.num_samples=3000 --config.sampling.method=ode
+```
