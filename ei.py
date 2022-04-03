@@ -25,7 +25,7 @@ def get_eps_coef_worker_fn(sde):
 
 def get_eps_coef_order1_seg_fn(sde):
   _eps_coef_worker = get_eps_coef_worker_fn(sde)
-  def _eps_coef_order1_seg(t_1, t_0, order=1,num_item=5000):
+  def _eps_coef_order1_seg(t_1, t_0, order=1,num_item=10000):
     integrand, _, dt = _eps_coef_worker(t_1, t_0, num_item)
     order1_coef = jnp.sum(integrand) * dt
     return jax.lax.cond(order > 1, lambda _: 0.0, lambda _: order1_coef, _)
@@ -60,7 +60,7 @@ order2_poly_coef_fn = [lambda item: item[0],
 
 def get_eps_coef_order2_seg_fn(sde):
   _eps_coef_worker = get_eps_coef_worker_fn(sde)
-  def _eps_coef_order2_seg(t_2, t_1, t_0, coef_idx=1,num_item=5000):
+  def _eps_coef_order2_seg(t_2, t_1, t_0, coef_idx=1,num_item=10000):
     integrand, t_inter, dt = _eps_coef_worker(t_1, t_0, num_item)
     last_term = jax.lax.switch(coef_idx, order2_poly_coef_fn, (t_inter, t_2, t_1, t_0))
     return jnp.sum(integrand * last_term) * dt

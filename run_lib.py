@@ -626,7 +626,10 @@ def sample_data(config,
   inceptionv3 = config.data.image_size >= 256
   inception_model = evaluation.get_inception_model(inceptionv3=inceptionv3)
 
-  state = checkpoints.restore_checkpoint(ckpt_file, state)
+  if os.path.exists(ckpt_file):
+    state = checkpoints.restore_checkpoint(ckpt_file, state)
+  else:
+    raise RuntimeError(f"{ckpt_file} not exist")
 
   pstate = flax.jax_utils.replicate(state)
 

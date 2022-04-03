@@ -3,6 +3,7 @@ logs
 assets/stats
 ckpts/
 ckpts
+run.sh
 
 # Compiled python modules.
 *.pyc

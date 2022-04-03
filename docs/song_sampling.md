@@ -22,10 +22,8 @@ jupyter lab build
 ## download ckpts
 
 ```shell
-mkdir -p ckpts/config.eval.batch_size
-
 # vp/cifar_ddpm_continuous
-gdown 1bLkJGwgX1kPlMdYv1TDtTRLecpUCokON -O ckpts/cifar10_ddpm
+gdown 1bLkJGwgX1kPlMdYv1TDtTRLecpUCokON -O ckpts/cifar10_ddpm_continuous_l
 ```
 
 ## check `sampling.ipynb`
