@@ -124,7 +124,7 @@ def get_sampling_fn(config, sde, model, shape, inverse_scaler, eps):
                                   inverse_scaler=inverse_scaler,
                                   num_step = config.sampling.ei_step,
                                   is_quad = config.sampling.ei_quad,
-                                  ipdnm = config.sampling.ipdnm,
+                                  ipndm = config.sampling.ipndm,
                                   eps=eps)
   # Predictor-Corrector sampling. Predictor-only and Corrector-only samplers are special cases.
   elif sampler_name.lower() == 'pc':
@@ -630,10 +630,11 @@ def get_pndm_sampler(sde, model, shape, inverse_scaler, num_step, is_quad, ipndm
 
     def body_fn(i, val):
         t1, t2 = rev_timesteps[i], rev_timesteps[i+1]
-        x, pred_eps = val
-        cur_eps, new_pred_eps = work_fn(x, i, pred_eps)
+        x, eps_pred = val
+        cur_eps, latest_eps = work_fn(x, i, eps_pred)
         new_x = transfer_fn(x, t1, t2, cur_eps)
-        return new_x, new_pred_eps
+        full_eps = jnp.concatenate([latest_eps[None], eps_pred])
+        return new_x, full_eps[:-1]
     
     eps_pred = jnp.stack([x,x,x])
     x, _ = jax.lax.fori_loop(0, num_step, body_fn, (x, eps_pred))

@@ -47,11 +47,11 @@ def get_ipndm_eps_fn(eps_fn, timesteps):
     return _fn
 
 
-def get_multistep_order4_eps(eps_fn, timesteps):
+def get_pndm_order4_eps(eps_fn, timesteps):
     def _fn(x, i, pred_eps):
         t = timesteps[i]
         eps = eps_fn(x, t)
-        cur_eps = order4_eps_fn(eps, pred_eps)
+        cur_eps = order4_eps_fn((eps, pred_eps))
         return cur_eps, eps
     return _fn
 
@@ -78,8 +78,8 @@ def get_runge_kutta_eps(eps_fn, transfer_fn, timesteps):
 
 
 def get_pndm_eps_fn(eps_fn, transfer_fn, timesteps):
-    _runge_kutta_eps_fn = get_runge_kutta_eps(eps_fn, transfer_fn)
-    _order_4_eps_fn = get_multistep_order4_eps(eps_fn)
+    _runge_kutta_eps_fn = get_runge_kutta_eps(eps_fn, transfer_fn, timesteps)
+    _order_4_eps_fn = get_pndm_order4_eps(eps_fn, timesteps)
     def runge_kutta_wrap_fn(meta):
         x, i, pred_eps = meta
         return _runge_kutta_eps_fn(x, i, pred_eps)
@@ -91,14 +91,11 @@ def get_pndm_eps_fn(eps_fn, transfer_fn, timesteps):
                runge_kutta_wrap_fn,
                order_4_wrap_fn,
               ]
-
     def _fn(x, i, pred_eps):
-        t = timesteps[i]
-        eps = eps_fn(x, t)
         cur_eps = jax.lax.switch(
             i,
             _pndm_eps_fn,
             (x, i, pred_eps)
         )
-        return cur_eps, eps
+        return cur_eps
     return _fn
