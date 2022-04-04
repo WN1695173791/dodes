@@ -23,6 +23,7 @@ jupyter lab build
 
 ```shell
 # vp/cifar_ddpm_continuous
+mkdir -p ckpts
 gdown 1bLkJGwgX1kPlMdYv1TDtTRLecpUCokON -O ckpts/cifar10_ddpm_continuous_l
 ```
 

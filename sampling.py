@@ -26,6 +26,7 @@ import flax
 from ei import ei_x_step
 
 from models.utils import from_flattened_numpy, to_flattened_numpy, get_score_fn
+from pndm import get_ipndm_eps_fn, get_pndm_eps_fn
 from scipy import integrate
 import sde_lib
 from utils import batch_mul, batch_add
@@ -115,6 +116,15 @@ def get_sampling_fn(config, sde, model, shape, inverse_scaler, eps):
                                   num_step = config.sampling.ei_step,
                                   is_quad = config.sampling.ei_quad,
                                   order = config.sampling.ei_order,
+                                  eps=eps)
+  elif sampler_name.lower == 'pndm':
+    sampling_fn = get_pndm_sampler(sde=sde,
+                                  model=model,
+                                  shape=shape,
+                                  inverse_scaler=inverse_scaler,
+                                  num_step = config.sampling.ei_step,
+                                  is_quad = config.sampling.ei_quad,
+                                  ipdnm = config.sampling.ipdnm,
                                   eps=eps)
   # Predictor-Corrector sampling. Predictor-only and Corrector-only samplers are special cases.
   elif sampler_name.lower() == 'pc':
@@ -567,3 +577,66 @@ def get_ode_sampler(sde, model, shape, inverse_scaler,
     return x, nfe
 
   return ode_sampler
+
+
+def get_pndm_sampler(sde, model, shape, inverse_scaler, num_step, is_quad, ipndm=True, eps=1e-3):
+  assert isinstance(sde, sde_lib.VPSDE)
+  nfe = num_step
+  if ipndm:
+    num_step = nfe 
+  else:
+    # pndm use rk for warmming up, reduce real num_step to keep same nfe
+    if nfe >= 12:
+      num_step = nfe - 9
+    else:
+      num_step = int(nfe / 4)
+    
+  if is_quad:
+    rev_timesteps = (jnp.linspace(jnp.sqrt(sde.T), jnp.sqrt(eps), num_step+1))**2
+  else:
+    rev_timesteps = jnp.linspace(sde.T, eps, num_step+1)
+
+  _ones = jnp.ones((jax.local_device_count(), shape[0]))
+
+  @jax.pmap
+  def pred_eps_fn(state, x, t):
+    score_fn = get_score_fn(sde, model, state.params_ema, state.model_state, train=False, continuous=True)
+    score = score_fn(x, t)
+    return sde.recover_eps(score, t)
+
+  def transfer_fn(x, t1, t2, eps):
+    alpha_t1 = sde.alpha_fn(t1)
+    alpha_t2 = sde.alpha_fn(t2)
+
+    sq_alpha_t1 = jnp.sqrt(alpha_t1)
+    sq_alpha_t2 = jnp.sqrt(alpha_t2)
+
+    return sq_alpha_t2 / sq_alpha_t1 * (x - jnp.sqrt(1-alpha_t1) * eps) + jnp.sqrt(1-alpha_t2) * eps
+
+  def pndm_sampler(prng, pstate, z=None):
+    rng = flax.jax_utils.unreplicate(prng)
+    rng, step_rng = random.split(rng)
+    if z is None:
+      # If not represent, sample the latent code from the prior distibution of the SDE.
+      x = sde.prior_sampling(step_rng, (jax.local_device_count(),) + shape)
+    else:
+      x = z
+
+    def eps_fn(x, t):
+        vec_t = _ones * t
+        return pred_eps_fn(pstate, x, vec_t)
+
+    work_fn = get_ipndm_eps_fn(eps_fn, rev_timesteps) if ipndm else get_pndm_eps_fn(eps_fn, transfer_fn, rev_timesteps)
+
+    def body_fn(i, val):
+        t1, t2 = rev_timesteps[i], rev_timesteps[i+1]
+        x, pred_eps = val
+        cur_eps, new_pred_eps = work_fn(x, i, pred_eps)
+        new_x = transfer_fn(x, t1, t2, cur_eps)
+        return new_x, new_pred_eps
+    
+    eps_pred = jnp.stack([x,x,x])
+    x, _ = jax.lax.fori_loop(0, num_step, body_fn, (x, eps_pred))
+    x = inverse_scaler(x)
+    return x, nfe
+  return pndm_sampler

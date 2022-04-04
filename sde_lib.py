@@ -280,3 +280,14 @@ class VESDE(SDE):
     f = jnp.zeros_like(x)
     G = jnp.sqrt(sigma ** 2 - adjacent_sigma ** 2)
     return f, G
+
+  def psi(self, t_start, t_end):
+    del t_start, t_end
+    return 1.0
+
+  def eps_integrand(self, vec_t):
+    sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** vec_t
+    return  - sigma**2 * (jnp.log(self.sigma_max) - jnp.log(self.sigma_min))
+
+  def recover_eps(self, score, t):
+    return batch_mul(score, t)

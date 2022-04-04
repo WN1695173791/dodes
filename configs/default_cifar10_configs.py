@@ -29,6 +29,7 @@ def get_default_configs():
   sampling.ei_step = 10
   sampling.ei_quad = False
   sampling.ei_order = 4
+  sampling.ipdnm = True
 
   # evaluation
   config.eval = evaluate = ml_collections.ConfigDict()
