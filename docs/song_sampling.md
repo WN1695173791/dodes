@@ -25,6 +25,8 @@ jupyter lab build
 # vp/cifar_ddpm_continuous
 mkdir -p ckpts
 gdown 1bLkJGwgX1kPlMdYv1TDtTRLecpUCokON -O ckpts/cifar10_ddpm_continuous_l
+
+gdown 1jFmheW6vFKUzvPCW2uCgaUskrGcomj8u -O ckpts/cifar10_ncsnpp_continuous
 ```
 
 ## check `sampling.ipynb`
